@@ -1,0 +1,16 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Everyone can read added hymns and Yoruba versions.
+    // Only the leader email addresses listed below can add, edit, or delete them.
+    match /{collection}/{docId} {
+      allow read: if collection in ['hymns', 'yoruba'];
+      allow write: if collection in ['hymns', 'yoruba']
+                   && request.auth != null
+                   && request.auth.token.email in [
+                        'leader1@example.com',
+                        'leader2@example.com'
+                      ];
+    }
+  }
+}

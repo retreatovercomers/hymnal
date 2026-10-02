@@ -1,0 +1,19 @@
+{
+  "name": "Overcomers Hymnal",
+  "short_name": "Hymnal",
+  "description": "Classic hymns in English and Yorùbá to read, sing, and share.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#EDF0EC",
+  "theme_color": "#2F5D50",
+  "lang": "en",
+  "categories": ["books", "lifestyle", "music"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
