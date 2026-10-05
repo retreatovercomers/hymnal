@@ -185,7 +185,9 @@ const BASE_HYMNS = [
  verses_yo:[
  "Ore-ofe! B'o ti dun to!\nO ti gba mi, elese;\nMo ti sonu, mo ti ri i,\nAfoju, mo riran wa.",
  "Ore-ofe mi 'okan mi bere,\nOre-ofe si mu mi la;\nBi 'nu mi ti dun to nigba,\nT'akoko mo gbagbo.",
- "Ewu, ewu ati oko,\nMo ti la ninu won;\nOre-ofe ni mo dupe fun,\nO si mu mi de'le."]},
+ "Ewu, ewu ati oko,\nMo ti la ninu won;\nOre-ofe ni mo dupe fun,\nO si mu mi de'le."],
+ tuneName:"New Britain", tempo:76,
+ melody:"C4:0.5 F4:0.5 F4:2 A4:0.33 G4:0.33 F4:0.34 A4:2 G4:1 F4:2 D4:1 C4:2 C4:0.5 F4:0.5 F4:2 A4:0.33 G4:0.33 F4:0.34 A4:2 G4:0.5 A4:0.5 C5:5 F4:0.5 A4:0.5 C5:1.5 A4:0.5 C5:0.5 A4:0.5 F4:2 C4:1 D4:2 F4:0.33 F4:0.33 D4:0.34 C4:2 C4:0.5 F4:0.5 F4:2 A4:0.33 G4:0.33 F4:0.34 A4:2 G4:1 F4:5"},
 {no:2, title:"Holy, Holy, Holy", title_yo:"Mimo, Mimo, Mimo!", author:"Reginald Heber", year:1826, theme:"Worship",
  verses:[
  "Holy, holy, holy! Lord God Almighty!\nEarly in the morning our song shall rise to Thee;\nHoly, holy, holy, merciful and mighty,\nGod in three Persons, blessed Trinity!",
@@ -196,7 +198,9 @@ const BASE_HYMNS = [
  "Mimo, mimo, mimo! Olodumare!\nNi kutukutu n'Iwo o gbo orin wa;\nMimo, mimo, mimo! Oniyonu julo!\nOlogo meta lai, Olubukun!",
  "Mimo, mimo, mimo! Awon ti orun nyin\nNwon nfi ade wura won lele y' ite ka:\nKerubim, Serafim nwole niwaju Re,\n'Wo t' O ti wa t' O si wa titi lai.",
  "Mimo, mimo, mimo! B'okunkun pa O mo,\nBi oju elese ko le ri ogo Re;\nIwo nikan l'O mo, ko tun si elomi,\nPipe n'nu agbara ati n'ife.",
- "Mimo, mimo, mimo! Olodumare!\nGbogbo ise Re n'ile l'oke l'o nyin O;\nMimo, mimo, mimo! Oniyonu julo!\nOlogo meta lai, Olubukun!"]},
+ "Mimo, mimo, mimo! Olodumare!\nGbogbo ise Re n'ile l'oke l'o nyin O;\nMimo, mimo, mimo! Oniyonu julo!\nOlogo meta lai, Olubukun!"],
+ tuneName:"Nicaea", tempo:88,
+ melody:"D4:1 D4:1 F#4:1 F#4:1 A4:1 A4:1 B4:1 B4:1 B4:1 B4:1 A4:2 F#4:1 A4:1 A4:1 A4:1 B4:1 A4:1 G4:1 F#4:1 D5:1 C#5:1 B4:1 A4:2 D4:1 D4:1 F#4:1 F#4:1 A4:1 A4:1 G4:1 F#4:1 E4:1 D4:1 E4:1 F#4:2 G4:1 F#4:1 E4:1 D4:1 E4:1 F#4:1 G4:1 F#4:1 E4:1 D4:2"},
 {no:3, title:"A Mighty Fortress Is Our God", author:"Martin Luther", year:1529, theme:"Strength",
  verses:[
  "A mighty fortress is our God,\nA bulwark never failing;\nOur helper He amid the flood\nOf mortal ills prevailing.",
@@ -455,6 +459,82 @@ const BASE_HYMNS = [
 {no:49, title:"Jesus, Take Me As I Am", author:"Dave Bryant", year:1995, theme:"Consecration", copyrighted:true},
 {no:50, title:"Your Name Is Infinitely Great", author:"Contemporary", year:null, theme:"Praise", copyrighted:true}
 ];
+
+// --- Simple built-in piano playback (Web Audio API, no audio files needed) ---
+let audioCtx = null;
+let playbackTimers = [];
+let isPlaying = false;
+
+function noteToFreq(name){
+  const m = name.match(/^([A-G])(#?)(\d)$/);
+  if(!m) return null;
+  const letters = {C:-9, D:-7, E:-5, F:-4, G:-2, A:0, B:2};
+  let semitone = letters[m[1]] + (m[2]==='#' ? 1 : 0) + (parseInt(m[3],10)-4)*12;
+  return 440 * Math.pow(2, semitone/12);
+}
+
+function parseMelody(str){
+  return str.trim().split(/\s+/).map(tok=>{
+    const [note, beats] = tok.split(':');
+    return {note, beats: parseFloat(beats)};
+  });
+}
+
+function playPianoNote(freq, startTime, durationSec){
+  if(!freq) return;
+  const o1 = audioCtx.createOscillator();
+  const o2 = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  o1.type = 'triangle';
+  o2.type = 'sine';
+  o1.frequency.value = freq;
+  o2.frequency.value = freq * 2;
+  const g2 = audioCtx.createGain();
+  g2.gain.value = 0.15;
+  o2.connect(g2);
+  g2.connect(gain);
+  o1.connect(gain);
+  gain.connect(audioCtx.destination);
+  const peak = 0.22;
+  gain.gain.setValueAtTime(0.0001, startTime);
+  gain.gain.exponentialRampToValueAtTime(peak, startTime + 0.015);
+  gain.gain.exponentialRampToValueAtTime(0.0001, startTime + durationSec * 0.95);
+  o1.start(startTime);
+  o2.start(startTime);
+  o1.stop(startTime + durationSec);
+  o2.stop(startTime + durationSec);
+}
+
+function stopPlayback(){
+  isPlaying = false;
+  playbackTimers.forEach(t=>clearTimeout(t));
+  playbackTimers = [];
+  if(audioCtx){ audioCtx.close().catch(()=>{}); audioCtx = null; }
+}
+
+function playMelody(hymn, onDone){
+  if(!hymn.melody) return;
+  stopPlayback();
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  isPlaying = true;
+  const notes = parseMelody(hymn.melody);
+  const secPerBeat = 60 / (hymn.tempo || 80);
+  let t = audioCtx.currentTime + 0.1;
+  let totalMs = 100;
+  notes.forEach(n=>{
+    const dur = n.beats * secPerBeat;
+    if(n.note !== 'R'){
+      playPianoNote(noteToFreq(n.note), t, dur);
+    }
+    t += dur;
+    totalMs += dur * 1000;
+  });
+  const timer = setTimeout(()=>{
+    isPlaying = false;
+    if(onDone) onDone();
+  }, totalMs);
+  playbackTimers.push(timer);
+}
 
 let favorites = {};
 try{ favorites = JSON.parse(localStorage.getItem('hymnal-favorites') || '{}'); }catch(e){ favorites = {}; }
@@ -911,6 +991,7 @@ function renderList(){
         renderList();
         return;
       }
+      stopPlayback();
       selectedNo = h.no;
       renderList();
       renderReading(h);
@@ -974,6 +1055,14 @@ function renderForm(existing){
         <label for="f-verses-yo">Verses (Yorùbá, optional)</label>
         <textarea id="f-verses-yo">${versesYoText}</textarea>
         <div class="hint">Separate each verse with a blank line. Leave blank if you don't have this one yet.</div>
+
+        <label for="f-tune-name">Tune name (optional)</label>
+        <input type="text" id="f-tune-name" value="${(h.tuneName||'').replace(/"/g,'&quot;')}" placeholder="e.g. New Britain">
+        <label for="f-tempo">Tempo in beats per minute (optional)</label>
+        <input type="number" id="f-tempo" value="${h.tempo||''}" placeholder="e.g. 80">
+        <label for="f-melody">Melody notes (optional)</label>
+        <textarea id="f-melody" style="min-height:90px; font-family:monospace; font-size:13px;">${h.melody||''}</textarea>
+        <div class="hint">For musicians only: space-separated notes as NOTE+OCTAVE:BEATS, e.g. "D4:1 D4:1 F#4:1 A4:2". Use R:1 for a rest. Leave blank for no playable tune.</div>
       </div>
       <div class="form-actions">
         <button class="btn-primary" id="f-save" type="button">Save</button>
@@ -1015,6 +1104,16 @@ function renderForm(existing){
       if(versesYo.length) newHymn.verses_yo = versesYo;
       const titleYo = document.getElementById('f-title-yo').value.trim();
       if(titleYo) newHymn.title_yo = titleYo;
+      const tuneName = document.getElementById('f-tune-name').value.trim();
+      if(tuneName) newHymn.tuneName = tuneName;
+      const tempo = document.getElementById('f-tempo').value;
+      if(tempo) newHymn.tempo = parseInt(tempo,10);
+      const melody = document.getElementById('f-melody').value.trim();
+      if(melody && /^([A-G]#?\d|R):\d+(\.\d+)?(\s+([A-G]#?\d|R):\d+(\.\d+)?)*$/.test(melody)){
+        newHymn.melody = melody;
+      } else if(melody){
+        alert('That melody text doesn\'t look right — each note should be like "D4:1" separated by spaces. The melody wasn\'t saved, but the rest of your changes were.');
+      }
     }
     if(existing){
       const isBase = BASE_HYMNS.some(b=>b.no===existing.no);
@@ -1058,6 +1157,11 @@ function renderReading(h){
       ${chorus ? `<div class="chorus"><span class="verse-num">•</span><span class="verse-text">${chorus}</span></div>` : ''}
     `).join('')}</div>`;
   }
+  const tuneHtml = h.melody ? `
+    <button id="playTuneBtn" type="button" style="display:flex; align-items:center; gap:8px; margin:0 0 20px; padding:9px 16px; border:1px solid var(--gold); background:transparent; color:var(--gold); border-radius:20px; font-family:'Source Serif 4',serif; font-size:14px; cursor:pointer;">
+      <span id="playTuneIcon">▶</span> Play tune${h.tuneName ? ' · ' + h.tuneName : ''}
+    </button>
+  ` : '';
   pane.innerHTML = `
     <button class="back-to-list" id="backToList" type="button">‹ Back to hymns</button>
     <div class="hymn-header">
@@ -1065,11 +1169,33 @@ function renderReading(h){
       <h2>${displayTitle}</h2>
       <div class="hymn-meta">${h.author}${h.year ? ', ' + h.year : ''}${useYo && h.title_yo ? ' · ' + h.title : ''}</div>
     </div>
+    ${tuneHtml}
     ${bodyHtml}
   `;
   pane.scrollTop = 0;
+  const playBtn = document.getElementById('playTuneBtn');
+  if(playBtn){
+    playBtn.addEventListener('click', ()=>{
+      const icon = document.getElementById('playTuneIcon');
+      if(isPlaying){
+        stopPlayback();
+        icon.textContent = '▶';
+        playBtn.lastChild.textContent = ` Play tune${h.tuneName ? ' · ' + h.tuneName : ''}`;
+      } else {
+        icon.textContent = '⏸';
+        playBtn.lastChild.textContent = ` Stop${h.tuneName ? ' · ' + h.tuneName : ''}`;
+        playMelody(h, ()=>{
+          if(document.getElementById('playTuneIcon')){
+            document.getElementById('playTuneIcon').textContent = '▶';
+            playBtn.lastChild.textContent = ` Play tune${h.tuneName ? ' · ' + h.tuneName : ''}`;
+          }
+        });
+      }
+    });
+  }
   const backBtn = document.getElementById('backToList');
   if(backBtn) backBtn.addEventListener('click', ()=>{
+    stopPlayback();
     selectedNo = null;
     pane.innerHTML = '<div class="empty-state">Choose a hymn from the list to read its verses.</div>';
     renderList();
@@ -1092,6 +1218,7 @@ langBtn.addEventListener('click', ()=>{
   language = language === 'yo' ? 'en' : 'yo';
   try{ localStorage.setItem('hymnal-language', language); }catch(e){}
   langBtn.textContent = language === 'yo' ? 'English' : 'Yorùbá';
+  stopPlayback();
   renderList();
   if(selectedNo!==null){
     const h = getHymns().find(x=>x.no===selectedNo);
