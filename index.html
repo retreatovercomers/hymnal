@@ -460,7 +460,7 @@ const BASE_HYMNS = [
 {no:50, title:"Your Name Is Infinitely Great", author:"Contemporary", year:null, theme:"Praise", copyrighted:true}
 ];
 
-// --- Simple built-in piano playback (Web Audio API, no audio files needed) ---
+// --- Simple built-in organ playback (Web Audio API, no audio files needed) ---
 let audioCtx = null;
 let playbackTimers = [];
 let isPlaying = false;
@@ -482,27 +482,39 @@ function parseMelody(str){
 
 function playPianoNote(freq, startTime, durationSec){
   if(!freq) return;
-  const o1 = audioCtx.createOscillator();
-  const o2 = audioCtx.createOscillator();
+  // Simple drawbar-organ voice: fundamental + octave + twelfth (octave+fifth), each a pure tone,
+  // blended like organ stops (8', 4', 2 2/3'), with a sustained level rather than a decaying pluck.
   const gain = audioCtx.createGain();
-  o1.type = 'triangle';
-  o2.type = 'sine';
-  o1.frequency.value = freq;
-  o2.frequency.value = freq * 2;
-  const g2 = audioCtx.createGain();
-  g2.gain.value = 0.15;
-  o2.connect(g2);
-  g2.connect(gain);
-  o1.connect(gain);
   gain.connect(audioCtx.destination);
-  const peak = 0.22;
+
+  const stops = [
+    {ratio: 1,   level: 0.20}, // 8'  fundamental
+    {ratio: 2,   level: 0.10}, // 4'  octave
+    {ratio: 3,   level: 0.05}, // 2 2/3' twelfth
+    {ratio: 4,   level: 0.04}  // 2'  double octave
+  ];
+  const oscillators = stops.map(stop=>{
+    const osc = audioCtx.createOscillator();
+    const stopGain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq * stop.ratio;
+    stopGain.gain.value = stop.level;
+    osc.connect(stopGain);
+    stopGain.connect(gain);
+    return osc;
+  });
+
+  const attack = 0.025;
+  const release = Math.min(0.09, durationSec * 0.3);
   gain.gain.setValueAtTime(0.0001, startTime);
-  gain.gain.exponentialRampToValueAtTime(peak, startTime + 0.015);
-  gain.gain.exponentialRampToValueAtTime(0.0001, startTime + durationSec * 0.95);
-  o1.start(startTime);
-  o2.start(startTime);
-  o1.stop(startTime + durationSec);
-  o2.stop(startTime + durationSec);
+  gain.gain.linearRampToValueAtTime(1, startTime + attack);
+  gain.gain.setValueAtTime(1, startTime + Math.max(attack, durationSec - release));
+  gain.gain.linearRampToValueAtTime(0.0001, startTime + durationSec);
+
+  oscillators.forEach(osc=>{
+    osc.start(startTime);
+    osc.stop(startTime + durationSec + 0.02);
+  });
 }
 
 function stopPlayback(){
