@@ -568,8 +568,7 @@ function parseMidiArrayBuffer(buffer){
   const ticksPerQuarter = division;
 
   let tempoBPM = null;
-  let bestTrackEvents = [];
-  let bestTrackCount = -1;
+  const allEvents = [];
 
   for(let t=0; t<numTracks; t++){
     if(pos + 8 > view.byteLength) break;
@@ -579,8 +578,6 @@ function parseMidiArrayBuffer(buffer){
     const trackEnd = pos + trackLen;
     let tick = 0;
     let runningStatus = null;
-    const events = [];
-    let noteOnCount = 0;
 
     while(pos < trackEnd){
       const vlq = readVarLen(view, pos);
@@ -608,11 +605,13 @@ function parseMidiArrayBuffer(buffer){
         pos = lenVlq.pos + lenVlq.value;
       } else {
         const hi = statusByte & 0xF0;
+        const channel = statusByte & 0x0F;
         if(hi === 0x90 || hi === 0x80){
           const note = view.getUint8(pos); const vel = view.getUint8(pos+1); pos += 2;
           const isOn = (hi === 0x90 && vel > 0);
-          events.push({tick, note, on: isOn});
-          if(isOn) noteOnCount++;
+          if(channel !== 9){ // channel 10 (index 9) is the standard drum channel — not a pitch
+            allEvents.push({tick, note, on: isOn});
+          }
         } else if(hi === 0xC0 || hi === 0xD0){
           pos += 1;
         } else {
@@ -621,40 +620,43 @@ function parseMidiArrayBuffer(buffer){
       }
     }
     pos = trackEnd;
-    if(noteOnCount > bestTrackCount){
-      bestTrackCount = noteOnCount;
-      bestTrackEvents = events;
-    }
   }
 
-  if(bestTrackCount <= 0){
+  if(allEvents.length === 0){
     throw new Error('No note data found in that file.');
   }
 
-  // Build a monophonic sequence: track currently-held notes, take the most recently started one as "the melody"
-  bestTrackEvents.sort((a,b)=> a.tick - b.tick);
+  // Merge every track and, at each moment, take the HIGHEST currently-sounding pitch as "the melody" —
+  // the standard way to pull a tune out of a 4-part hymn texture where the soprano carries the tune.
+  allEvents.sort((a,b)=> a.tick - b.tick);
+  const active = []; // currently-held pitches
   const notes = [];
-  let heldNote = null;
-  let heldStartTick = 0;
-  let lastEventTick = 0;
+  let curNote = null;
+  let curStartTick = 0;
 
-  bestTrackEvents.forEach(ev=>{
+  function topPitch(){
+    return active.length ? Math.max(...active) : null;
+  }
+
+  allEvents.forEach(ev=>{
     if(ev.on){
-      if(heldNote !== null && ev.tick > heldStartTick){
-        notes.push({tick: heldStartTick, endTick: ev.tick, note: heldNote});
-      }
-      heldNote = ev.note;
-      heldStartTick = ev.tick;
+      if(!active.includes(ev.note)) active.push(ev.note);
     } else {
-      if(heldNote === ev.note){
-        notes.push({tick: heldStartTick, endTick: ev.tick, note: heldNote});
-        heldNote = null;
-      }
+      const idx = active.indexOf(ev.note);
+      if(idx !== -1) active.splice(idx, 1);
     }
-    lastEventTick = ev.tick;
+    const newTop = topPitch();
+    if(newTop !== curNote){
+      if(curNote !== null && ev.tick > curStartTick){
+        notes.push({tick: curStartTick, endTick: ev.tick, note: curNote});
+      }
+      curNote = newTop;
+      curStartTick = ev.tick;
+    }
   });
-  if(heldNote !== null){
-    notes.push({tick: heldStartTick, endTick: lastEventTick, note: heldNote});
+  if(curNote !== null){
+    const lastTick = allEvents[allEvents.length-1].tick;
+    notes.push({tick: curStartTick, endTick: lastTick, note: curNote});
   }
 
   const beatTokens = [];
