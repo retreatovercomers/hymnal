@@ -536,6 +536,142 @@ function playMelody(hymn, onDone){
   playbackTimers.push(timer);
 }
 
+// --- MIDI file import: reads a melody line straight out of a standard .mid file ---
+function midiPitchToNoteName(p){
+  const chroma = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  const idx = ((p - 60) % 12 + 12) % 12;
+  const octave = 4 + Math.floor((p - 60) / 12);
+  return chroma[idx] + octave;
+}
+
+function readVarLen(view, pos){
+  let value = 0, b;
+  do{
+    b = view.getUint8(pos++);
+    value = (value << 7) | (b & 0x7f);
+  } while(b & 0x80);
+  return {value, pos};
+}
+
+function parseMidiArrayBuffer(buffer){
+  const view = new DataView(buffer);
+  let pos = 0;
+  function str4(p){ let s=''; for(let i=0;i<4;i++) s += String.fromCharCode(view.getUint8(p+i)); return s; }
+  if(str4(pos) !== 'MThd') throw new Error('Not a standard MIDI file');
+  pos += 4;
+  const headerLen = view.getUint32(pos); pos += 4;
+  const format = view.getUint16(pos); pos += 2;
+  const numTracks = view.getUint16(pos); pos += 2;
+  const division = view.getUint16(pos); pos += 2;
+  pos += (headerLen - 6);
+  if(division & 0x8000) throw new Error('SMPTE time format isn\'t supported — try a different MIDI file.');
+  const ticksPerQuarter = division;
+
+  let tempoBPM = null;
+  let bestTrackEvents = [];
+  let bestTrackCount = -1;
+
+  for(let t=0; t<numTracks; t++){
+    if(pos + 8 > view.byteLength) break;
+    if(str4(pos) !== 'MTrk') break;
+    pos += 4;
+    const trackLen = view.getUint32(pos); pos += 4;
+    const trackEnd = pos + trackLen;
+    let tick = 0;
+    let runningStatus = null;
+    const events = [];
+    let noteOnCount = 0;
+
+    while(pos < trackEnd){
+      const vlq = readVarLen(view, pos);
+      const delta = vlq.value; pos = vlq.pos;
+      tick += delta;
+      let statusByte = view.getUint8(pos);
+      if(statusByte < 0x80){
+        // running status: reuse previous status byte, this byte is data
+        statusByte = runningStatus;
+      } else {
+        pos++;
+        runningStatus = statusByte;
+      }
+      if(statusByte === 0xFF){
+        const type = view.getUint8(pos); pos++;
+        const lenVlq = readVarLen(view, pos);
+        const len = lenVlq.value; pos = lenVlq.pos;
+        if(type === 0x51 && len === 3){
+          const microsPerQuarter = (view.getUint8(pos)<<16) | (view.getUint8(pos+1)<<8) | view.getUint8(pos+2);
+          tempoBPM = Math.round(60000000 / microsPerQuarter);
+        }
+        pos += len;
+      } else if(statusByte === 0xF0 || statusByte === 0xF7){
+        const lenVlq = readVarLen(view, pos);
+        pos = lenVlq.pos + lenVlq.value;
+      } else {
+        const hi = statusByte & 0xF0;
+        if(hi === 0x90 || hi === 0x80){
+          const note = view.getUint8(pos); const vel = view.getUint8(pos+1); pos += 2;
+          const isOn = (hi === 0x90 && vel > 0);
+          events.push({tick, note, on: isOn});
+          if(isOn) noteOnCount++;
+        } else if(hi === 0xC0 || hi === 0xD0){
+          pos += 1;
+        } else {
+          pos += 2;
+        }
+      }
+    }
+    pos = trackEnd;
+    if(noteOnCount > bestTrackCount){
+      bestTrackCount = noteOnCount;
+      bestTrackEvents = events;
+    }
+  }
+
+  if(bestTrackCount <= 0){
+    throw new Error('No note data found in that file.');
+  }
+
+  // Build a monophonic sequence: track currently-held notes, take the most recently started one as "the melody"
+  bestTrackEvents.sort((a,b)=> a.tick - b.tick);
+  const notes = [];
+  let heldNote = null;
+  let heldStartTick = 0;
+  let lastEventTick = 0;
+
+  bestTrackEvents.forEach(ev=>{
+    if(ev.on){
+      if(heldNote !== null && ev.tick > heldStartTick){
+        notes.push({tick: heldStartTick, endTick: ev.tick, note: heldNote});
+      }
+      heldNote = ev.note;
+      heldStartTick = ev.tick;
+    } else {
+      if(heldNote === ev.note){
+        notes.push({tick: heldStartTick, endTick: ev.tick, note: heldNote});
+        heldNote = null;
+      }
+    }
+    lastEventTick = ev.tick;
+  });
+  if(heldNote !== null){
+    notes.push({tick: heldStartTick, endTick: lastEventTick, note: heldNote});
+  }
+
+  const beatTokens = [];
+  let cursorTick = notes.length ? notes[0].tick : 0;
+  notes.forEach(n=>{
+    if(n.tick > cursorTick){
+      const restBeats = (n.tick - cursorTick) / ticksPerQuarter;
+      if(restBeats > 0.05) beatTokens.push(`R:${Math.round(restBeats*100)/100}`);
+    }
+    const durBeats = Math.max(0.1, (n.endTick - n.tick) / ticksPerQuarter);
+    beatTokens.push(`${midiPitchToNoteName(n.note)}:${Math.round(durBeats*100)/100}`);
+    cursorTick = n.endTick;
+  });
+
+  return {melody: beatTokens.join(' '), tempo: tempoBPM};
+}
+
 let favorites = {};
 try{ favorites = JSON.parse(localStorage.getItem('hymnal-favorites') || '{}'); }catch(e){ favorites = {}; }
 let activeFilter = 'All';
@@ -1063,6 +1199,13 @@ function renderForm(existing){
         <label for="f-melody">Melody notes (optional)</label>
         <textarea id="f-melody" style="min-height:90px; font-family:monospace; font-size:13px;">${h.melody||''}</textarea>
         <div class="hint">For musicians only: space-separated notes as NOTE+OCTAVE:BEATS, e.g. "D4:1 D4:1 F#4:1 A4:2". Use R:1 for a rest. Leave blank for no playable tune.</div>
+
+        <label for="f-midi-file" style="margin-top:16px;">Or upload a MIDI file to read the tune from</label>
+        <input type="file" id="f-midi-file" accept=".mid,.midi">
+        <div class="form-actions" style="margin-top:10px;">
+          <button class="btn-secondary" id="f-midi-read" type="button">Read melody from file</button>
+        </div>
+        <div id="f-midi-msg" style="font-size:13px; margin-top:8px; display:none;"></div>
       </div>
       <div class="form-actions">
         <button class="btn-primary" id="f-save" type="button">Save</button>
@@ -1073,6 +1216,34 @@ function renderForm(existing){
   pane.scrollTop = 0;
   document.getElementById('f-copyrighted').addEventListener('change', (e)=>{
     document.getElementById('f-words-block').style.display = e.target.checked ? 'none' : 'block';
+  });
+  document.getElementById('f-midi-read').addEventListener('click', ()=>{
+    const fileInput = document.getElementById('f-midi-file');
+    const msgEl = document.getElementById('f-midi-msg');
+    msgEl.style.display = 'block';
+    if(!fileInput.files || !fileInput.files[0]){
+      msgEl.textContent = 'Choose a .mid file first.';
+      return;
+    }
+    const file = fileInput.files[0];
+    msgEl.textContent = 'Reading file…';
+    const reader = new FileReader();
+    reader.onload = (e)=>{
+      try{
+        const result = parseMidiArrayBuffer(e.target.result);
+        if(!result.melody){
+          msgEl.textContent = 'Could not find a usable melody line in that file.';
+          return;
+        }
+        document.getElementById('f-melody').value = result.melody;
+        if(result.tempo) document.getElementById('f-tempo').value = result.tempo;
+        msgEl.textContent = `Melody read from ${file.name} (${result.melody.split(' ').length} notes). Check the Melody notes field below, then Save.`;
+      }catch(err){
+        msgEl.textContent = `Couldn't read that file: ${err.message}`;
+      }
+    };
+    reader.onerror = ()=>{ msgEl.textContent = 'Could not read the file.'; };
+    reader.readAsArrayBuffer(file);
   });
   document.getElementById('f-cancel').addEventListener('click', ()=>{
     if(existing){ renderReading(existing); } else {
