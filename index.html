@@ -484,8 +484,9 @@ function parseMelody(str){
   });
 }
 
-function playPianoNote(freq, startTime, durationSec){
+function playPianoNote(freq, startTime, durationSec, volume){
   if(!freq) return;
+  const vol = (volume === undefined) ? 1 : volume;
   // Simple drawbar-organ voice: fundamental + octave + twelfth (octave+fifth), each a pure tone,
   // blended like organ stops (8', 4', 2 2/3'), with a sustained level rather than a decaying pluck.
   const gain = audioCtx.createGain();
@@ -511,8 +512,8 @@ function playPianoNote(freq, startTime, durationSec){
   const attack = 0.025;
   const release = Math.min(0.09, durationSec * 0.3);
   gain.gain.setValueAtTime(0.0001, startTime);
-  gain.gain.linearRampToValueAtTime(1, startTime + attack);
-  gain.gain.setValueAtTime(1, startTime + Math.max(attack, durationSec - release));
+  gain.gain.linearRampToValueAtTime(vol, startTime + attack);
+  gain.gain.setValueAtTime(vol, startTime + Math.max(attack, durationSec - release));
   gain.gain.linearRampToValueAtTime(0.0001, startTime + durationSec);
 
   oscillators.forEach(osc=>{
@@ -526,6 +527,29 @@ function stopPlayback(){
   playbackTimers.forEach(t=>clearTimeout(t));
   playbackTimers = [];
   if(audioCtx){ audioCtx.close().catch(()=>{}); audioCtx = null; }
+}
+
+function playFullMidi(hymn, onDone){
+  if(!hymn.midiFull) return;
+  stopPlayback();
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  isPlaying = true;
+  const secPerBeat = 60 / (hymn.midiTempo || hymn.tempo || 80);
+  const base = audioCtx.currentTime + 0.1;
+  let endBeat = 0;
+  hymn.midiFull.trim().split(/\s+/).forEach(tok=>{
+    const m = tok.match(/^([A-G]#?\d)@([\d.]+):([\d.]+)$/);
+    if(!m) return;
+    const start = parseFloat(m[2]);
+    const dur = parseFloat(m[3]);
+    playPianoNote(noteToFreq(m[1]), base + start * secPerBeat, dur * secPerBeat, 0.4);
+    endBeat = Math.max(endBeat, start + dur);
+  });
+  const timer = setTimeout(()=>{
+    isPlaying = false;
+    if(onDone) onDone();
+  }, (endBeat * secPerBeat + 0.3) * 1000);
+  playbackTimers.push(timer);
 }
 
 function playMelody(hymn, onDone){
@@ -687,7 +711,26 @@ function parseMidiArrayBuffer(buffer){
     cursorTick = n.endTick;
   });
 
-  return {melody: beatTokens.join(' '), tempo: tempoBPM};
+  // Also keep the FULL arrangement (every note of every part, chords included) so it can be played back as uploaded.
+  const openQueues = {};
+  const fullTokens = [];
+  allEvents.forEach(ev=>{
+    if(ev.on){
+      if(!openQueues[ev.note]) openQueues[ev.note] = [];
+      openQueues[ev.note].push(ev.tick);
+    } else {
+      const q = openQueues[ev.note];
+      if(q && q.length){
+        const startTick = q.shift();
+        const durTicks = Math.max(1, ev.tick - startTick);
+        const start = Math.round((startTick / ticksPerQuarter) * 100) / 100;
+        const dur = Math.max(0.05, Math.round((durTicks / ticksPerQuarter) * 100) / 100);
+        fullTokens.push(`${midiPitchToNoteName(ev.note)}@${start}:${dur}`);
+      }
+    }
+  });
+
+  return {melody: beatTokens.join(' '), tempo: tempoBPM, full: fullTokens.join(' ')};
 }
 
 let favorites = {};
@@ -1224,6 +1267,10 @@ function renderForm(existing){
           <button class="btn-secondary" id="f-midi-read" type="button">Read melody from file</button>
         </div>
         <div id="f-midi-msg" style="font-size:13px; margin-top:8px; display:none;"></div>
+        <input type="hidden" id="f-midi-full" value="${(h.midiFull||'').replace(/"/g,'&quot;')}">
+        <div id="f-midi-full-note" style="font-size:12px; color:var(--ink-soft); margin-top:6px; ${h.midiFull ? '' : 'display:none;'}">
+          Full MIDI arrangement saved for playback. <a href="#" id="f-midi-full-clear" style="color:var(--wine);">Remove it</a>
+        </div>
       </div>
       <div class="form-actions">
         <button class="btn-primary" id="f-save" type="button">Save</button>
@@ -1234,6 +1281,11 @@ function renderForm(existing){
   pane.scrollTop = 0;
   document.getElementById('f-copyrighted').addEventListener('change', (e)=>{
     document.getElementById('f-words-block').style.display = e.target.checked ? 'none' : 'block';
+  });
+  document.getElementById('f-midi-full-clear').addEventListener('click', (e)=>{
+    e.preventDefault();
+    document.getElementById('f-midi-full').value = '';
+    document.getElementById('f-midi-full-note').style.display = 'none';
   });
   document.getElementById('f-midi-read').addEventListener('click', ()=>{
     const fileInput = document.getElementById('f-midi-file');
@@ -1255,7 +1307,11 @@ function renderForm(existing){
         }
         document.getElementById('f-melody').value = result.melody;
         if(result.tempo) document.getElementById('f-tempo').value = result.tempo;
-        msgEl.textContent = `Melody read from ${file.name} (${result.melody.split(' ').length} notes). Check the Melody notes field below, then Save.`;
+        if(result.full){
+          document.getElementById('f-midi-full').value = result.full;
+          document.getElementById('f-midi-full-note').style.display = 'block';
+        }
+        msgEl.textContent = `Read ${file.name}: melody (${result.melody.split(' ').length} notes) plus the full arrangement for "Play full MIDI". Check the fields, then Save.`;
       }catch(err){
         msgEl.textContent = `Couldn't read that file: ${err.message}`;
       }
@@ -1297,6 +1353,8 @@ function renderForm(existing){
       if(tuneName) newHymn.tuneName = tuneName;
       const tempo = document.getElementById('f-tempo').value;
       if(tempo) newHymn.tempo = parseInt(tempo,10);
+      const midiFull = document.getElementById('f-midi-full').value.trim();
+      if(midiFull) newHymn.midiFull = midiFull;
       const melody = document.getElementById('f-melody').value.trim();
       if(melody && /^([A-G]#?\d|R):\d+(\.\d+)?(\s+([A-G]#?\d|R):\d+(\.\d+)?)*$/.test(melody)){
         newHymn.melody = melody;
@@ -1346,10 +1404,12 @@ function renderReading(h){
       ${chorus ? `<div class="chorus"><span class="verse-num">•</span><span class="verse-text">${chorus}</span></div>` : ''}
     `).join('')}</div>`;
   }
-  const tuneHtml = h.melody ? `
-    <button id="playTuneBtn" type="button" style="display:flex; align-items:center; gap:8px; margin:0 0 20px; padding:9px 16px; border:1px solid var(--gold); background:transparent; color:var(--gold); border-radius:20px; font-family:'Source Serif 4',serif; font-size:14px; cursor:pointer;">
-      <span id="playTuneIcon">▶</span> Play tune${h.tuneName ? ' · ' + h.tuneName : ''}
-    </button>
+  const playBtnStyle = "display:flex; align-items:center; gap:8px; padding:9px 16px; border:1px solid var(--gold); background:transparent; color:var(--gold); border-radius:20px; font-family:'Source Serif 4',serif; font-size:14px; cursor:pointer;";
+  const tuneHtml = (h.melody || h.midiFull) ? `
+    <div style="display:flex; flex-wrap:wrap; gap:10px; margin:0 0 20px;">
+      ${h.melody ? `<button id="playTuneBtn" type="button" style="${playBtnStyle}"><span class="play-icon">▶</span><span class="play-label">Play tune${h.tuneName ? ' · ' + h.tuneName : ''}</span></button>` : ''}
+      ${h.midiFull ? `<button id="playFullBtn" type="button" style="${playBtnStyle}"><span class="play-icon">▶</span><span class="play-label">Play full MIDI</span></button>` : ''}
+    </div>
   ` : '';
   pane.innerHTML = `
     <button class="back-to-list" id="backToList" type="button">‹ Back to hymns</button>
@@ -1362,26 +1422,34 @@ function renderReading(h){
     ${bodyHtml}
   `;
   pane.scrollTop = 0;
+  const tuneLabel = `Play tune${h.tuneName ? ' · ' + h.tuneName : ''}`;
   const playBtn = document.getElementById('playTuneBtn');
-  if(playBtn){
-    playBtn.addEventListener('click', ()=>{
-      const icon = document.getElementById('playTuneIcon');
+  const fullBtn = document.getElementById('playFullBtn');
+  function resetPlayButtons(){
+    [[playBtn, tuneLabel], [fullBtn, 'Play full MIDI']].forEach(([btn, label])=>{
+      if(!btn) return;
+      btn.querySelector('.play-icon').textContent = '▶';
+      btn.querySelector('.play-label').textContent = label;
+    });
+  }
+  function wirePlayButton(btn, startFn){
+    if(!btn) return;
+    btn.addEventListener('click', ()=>{
       if(isPlaying){
         stopPlayback();
-        icon.textContent = '▶';
-        playBtn.lastChild.textContent = ` Play tune${h.tuneName ? ' · ' + h.tuneName : ''}`;
+        resetPlayButtons();
       } else {
-        icon.textContent = '⏸';
-        playBtn.lastChild.textContent = ` Stop${h.tuneName ? ' · ' + h.tuneName : ''}`;
-        playMelody(h, ()=>{
-          if(document.getElementById('playTuneIcon')){
-            document.getElementById('playTuneIcon').textContent = '▶';
-            playBtn.lastChild.textContent = ` Play tune${h.tuneName ? ' · ' + h.tuneName : ''}`;
-          }
+        resetPlayButtons();
+        btn.querySelector('.play-icon').textContent = '⏸';
+        btn.querySelector('.play-label').textContent = 'Stop';
+        startFn(()=>{
+          if(document.body.contains(btn)) resetPlayButtons();
         });
       }
     });
   }
+  wirePlayButton(playBtn, (done)=>playMelody(h, done));
+  wirePlayButton(fullBtn, (done)=>playFullMidi(h, done));
   const backBtn = document.getElementById('backToList');
   if(backBtn) backBtn.addEventListener('click', ()=>{
     stopPlayback();
