@@ -529,6 +529,11 @@ let audioCtx = null;
 let playbackTimers = [];
 let isPlaying = false;
 
+// Titles always show with the first letter of every word capitalised (English and Yorùbá).
+function titleCase(str){
+  return String(str || '').replace(/(^|[\s(\["“])(['‘]?)(\p{Ll})/gu, (m, before, quote, letter)=> before + quote + letter.toUpperCase());
+}
+
 function noteToFreq(name){
   const m = name.match(/^([A-G])(#?)(\d)$/);
   if(!m) return null;
@@ -1231,7 +1236,7 @@ function renderList(){
     item.innerHTML = `
       <span class="hymn-no">${h.no}</span>
       <span style="flex:1;">
-        <span class="hymn-item-title">${showYoTitle ? h.title_yo : h.title}</span>
+        <span class="hymn-item-title">${titleCase(showYoTitle ? h.title_yo : h.title)}</span>
         <span class="hymn-item-theme">${h.theme}${h.year ? ' · ' + h.year : ''}${h.copyrighted ? ' · words licensed' : ''}${h.verses_yo ? ' · Yorùbá available' : ''}</span>
       </span>
       ${editMode ? `<button class="icon-btn" data-act="edit" aria-label="Edit hymn">✎</button>
@@ -1261,7 +1266,7 @@ function renderList(){
 }
 
 function deleteHymn(h){
-  if(!confirm(`Remove "${h.title}" from the hymnal?`)) return;
+  if(!confirm(`Remove "${titleCase(h.title)}" from the hymnal?`)) return;
   const isBase = BASE_HYMNS.some(b=>b.no===h.no);
   if(isBase){
     if(!overrides.deleted.includes(h.no)) overrides.deleted.push(h.no);
@@ -1390,7 +1395,7 @@ function renderForm(existing){
     const copyrighted = document.getElementById('f-copyrighted').checked;
     const newHymn = {
       no: existing ? existing.no : nextHymnNo(),
-      title,
+      title: titleCase(title),
       author: document.getElementById('f-author').value.trim() || 'Unknown',
       year: document.getElementById('f-year').value ? parseInt(document.getElementById('f-year').value,10) : null,
       theme: document.getElementById('f-theme').value.trim() || 'Other',
@@ -1408,7 +1413,7 @@ function renderForm(existing){
         .split(/\n\s*\n/).map(v=>v.trim()).filter(Boolean);
       if(versesYo.length) newHymn.verses_yo = versesYo;
       const titleYo = document.getElementById('f-title-yo').value.trim();
-      if(titleYo) newHymn.title_yo = titleYo;
+      if(titleYo) newHymn.title_yo = titleCase(titleYo);
       const tuneName = document.getElementById('f-tune-name').value.trim();
       if(tuneName) newHymn.tuneName = tuneName;
       const tempo = document.getElementById('f-tempo').value;
@@ -1441,7 +1446,7 @@ function renderReading(h){
   const wantYo = language === 'yo';
   const hasYo = !!(h.verses_yo && h.verses_yo.length);
   const useYo = wantYo && hasYo;
-  const displayTitle = (useYo && h.title_yo) ? h.title_yo : h.title;
+  const displayTitle = titleCase((useYo && h.title_yo) ? h.title_yo : h.title);
   let bodyHtml;
   if(h.copyrighted){
     bodyHtml = `<div class="empty-state" style="margin-top:10px;">
@@ -1476,7 +1481,7 @@ function renderReading(h){
     <div class="hymn-header">
       <div class="no">No. ${h.no} · ${h.theme}</div>
       <h2>${displayTitle}</h2>
-      <div class="hymn-meta">${h.author}${h.year ? ', ' + h.year : ''}${useYo && h.title_yo ? ' · ' + h.title : ''}</div>
+      <div class="hymn-meta">${h.author}${h.year ? ', ' + h.year : ''}${useYo && h.title_yo ? ' · ' + titleCase(h.title) : ''}</div>
     </div>
     ${tuneHtml}
     ${bodyHtml}
