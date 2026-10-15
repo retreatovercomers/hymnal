@@ -1299,19 +1299,19 @@ function renderForm(existing){
         <label for="f-copyrighted" style="margin:0;">This song is still under copyright — don't store the words</label>
       </div>
       <div id="f-words-block" style="${h.copyrighted ? 'display:none;' : ''}">
-        <label for="f-chorus">Chorus (English, optional)</label>
-        <textarea id="f-chorus" style="min-height:70px;">${h.chorus||''}</textarea>
         <label for="f-verses">Verses (English)</label>
         <textarea id="f-verses">${versesText}</textarea>
         <div class="hint">Separate each verse with a blank line.</div>
+        <label for="f-chorus">Chorus (English, optional)</label>
+        <textarea id="f-chorus" style="min-height:70px;">${h.chorus||''}</textarea>
         <label for="f-title-yo">Title (Yorùbá, optional)</label>
         <input type="text" id="f-title-yo" value="${(h.title_yo||'').replace(/"/g,'&quot;')}">
         <div class="hint">Shown instead of the English title when someone switches to Yorùbá.</div>
-        <label for="f-chorus-yo">Chorus (Yorùbá, optional)</label>
-        <textarea id="f-chorus-yo" style="min-height:70px;">${h.chorus_yo||''}</textarea>
         <label for="f-verses-yo">Verses (Yorùbá, optional)</label>
         <textarea id="f-verses-yo">${versesYoText}</textarea>
         <div class="hint">Separate each verse with a blank line. Leave blank if you don't have this one yet.</div>
+        <label for="f-chorus-yo">Chorus (Yorùbá, optional)</label>
+        <textarea id="f-chorus-yo" style="min-height:70px;">${h.chorus_yo||''}</textarea>
 
         <label for="f-tune-name">Tune name (optional)</label>
         <input type="text" id="f-tune-name" value="${(h.tuneName||'').replace(/"/g,'&quot;')}" placeholder="e.g. New Britain">
