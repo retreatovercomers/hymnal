@@ -158,7 +158,7 @@ main{display:flex; flex:1; min-height:0; overflow:hidden;}
 <main>
   <div class="list-pane">
     <div class="search-wrap">
-      <input id="search" type="text" placeholder="Search by title or first line…" autocomplete="off">
+      <input id="search" type="text" placeholder="Search by title or first line (English or Yorùbá)…" autocomplete="off">
       <div class="filters" id="filters"></div>
       <button id="categoriesToggle" type="button" style="margin-top:8px; background:none; border:none; color:var(--ink-soft); font-size:12px; cursor:pointer; padding:0; text-decoration:underline;">Show/hide categories</button>
       <div id="categoriesPanel" style="display:none; margin-top:8px; padding:10px; border:1px solid var(--line); border-radius:4px; max-height:160px; overflow-y:auto;"></div>
@@ -528,6 +528,17 @@ const BASE_HYMNS = [
 let audioCtx = null;
 let playbackTimers = [];
 let isPlaying = false;
+
+// Search ignores capitals, accents/dots under letters (ọ, ẹ, ṣ, à, é ...) and punctuation, so Yorùbá can be typed with or without them.
+function normalizeSearch(str){
+  return String(str || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/['’‘`]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 // Titles always show with the first letter of every word capitalised (English and Yorùbá).
 function titleCase(str){
@@ -1213,12 +1224,12 @@ function renderList(){
   document.getElementById('addBtn').style.display = editMode ? 'block' : 'none';
   document.getElementById('editNote').style.display = editMode ? 'block' : 'none';
   applyMobileLayout();
-  const q = document.getElementById('search').value.trim().toLowerCase();
+  const q = normalizeSearch(document.getElementById('search').value);
   const list = document.getElementById('hymnList');
   list.innerHTML = '';
   const filtered = getHymns().filter(h=>{
     const matchesTheme = activeFilter==='All' || h.theme===activeFilter;
-    const matchesQuery = !q || h.title.toLowerCase().includes(q) || (h.verses && h.verses[0] || '').toLowerCase().includes(q);
+    const matchesQuery = !q || [h.title, h.title_yo, h.verses && h.verses[0], h.verses_yo && h.verses_yo[0]].some(field=> normalizeSearch(field).includes(q));
     return matchesTheme && matchesQuery;
   });
   if(filtered.length===0){
