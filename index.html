@@ -537,7 +537,7 @@ function buildHymnText(h){
   const chorus = useYo ? h.chorus_yo : h.chorus;
   const parts = [title, ''];
   verses.forEach((v, i)=>{
-    parts.push(`${i+1}.`, v, '');
+    parts.push(`${i+1}. ${v}`, '');
     if(chorus && i === 0) parts.push('Chorus:', chorus, '');
   });
   return parts.join('\n').trim();
