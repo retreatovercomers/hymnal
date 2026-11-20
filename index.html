@@ -529,6 +529,39 @@ let audioCtx = null;
 let playbackTimers = [];
 let isPlaying = false;
 
+// Plain-text version of the hymn as currently shown (title, the verses, and the chorus once, after the first verse).
+function buildHymnText(h){
+  const useYo = language === 'yo' && h.verses_yo && h.verses_yo.length;
+  const title = titleCase(useYo && h.title_yo ? h.title_yo : h.title);
+  const verses = useYo ? h.verses_yo : (h.verses || []);
+  const chorus = useYo ? h.chorus_yo : h.chorus;
+  const parts = [title, ''];
+  verses.forEach((v, i)=>{
+    parts.push(`${i+1}.`, v, '');
+    if(chorus && i === 0) parts.push('Chorus:', chorus, '');
+  });
+  return parts.join('\n').trim();
+}
+
+async function copyText(text){
+  try{
+    await navigator.clipboard.writeText(text);
+    return true;
+  }catch(e){
+    try{
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    }catch(e2){ return false; }
+  }
+}
+
 // Search ignores capitals, accents/dots under letters (ọ, ẹ, ṣ, à, é ...) and punctuation, so Yorùbá can be typed with or without them.
 function normalizeSearch(str){
   return String(str || '')
@@ -1481,8 +1514,9 @@ function renderReading(h){
     `).join('')}</div>`;
   }
   const playBtnStyle = "display:flex; align-items:center; gap:8px; padding:9px 16px; border:1px solid var(--gold); background:transparent; color:var(--gold); border-radius:20px; font-family:'Source Serif 4',serif; font-size:14px; cursor:pointer;";
-  const tuneHtml = (h.melody || h.midiFull) ? `
+  const tuneHtml = (h.melody || h.midiFull || !h.copyrighted) ? `
     <div style="display:flex; flex-wrap:wrap; gap:10px; margin:0 0 20px;">
+      ${!h.copyrighted ? `<button id="copyHymnBtn" type="button" style="${playBtnStyle}"><span class="play-label">Copy hymn</span></button>` : ''}
       ${h.melody ? `<button id="playTuneBtn" type="button" style="${playBtnStyle}"><span class="play-icon">▶</span><span class="play-label">Play tune${h.tuneName ? ' · ' + h.tuneName : ''}</span></button>` : ''}
       ${h.midiFull ? `<button id="playFullBtn" type="button" style="${playBtnStyle}"><span class="play-icon">▶</span><span class="play-label">Play full MIDI</span></button>` : ''}
     </div>
@@ -1526,6 +1560,15 @@ function renderReading(h){
   }
   wirePlayButton(playBtn, (done)=>playMelody(h, done));
   wirePlayButton(fullBtn, (done)=>playFullMidi(h, done));
+  const copyBtn = document.getElementById('copyHymnBtn');
+  if(copyBtn){
+    copyBtn.addEventListener('click', async ()=>{
+      const label = copyBtn.querySelector('.play-label');
+      const ok = await copyText(buildHymnText(h));
+      label.textContent = ok ? 'Copied!' : 'Could not copy';
+      setTimeout(()=>{ label.textContent = 'Copy hymn'; }, 1800);
+    });
+  }
   const backBtn = document.getElementById('backToList');
   if(backBtn) backBtn.addEventListener('click', ()=>{
     stopPlayback();
