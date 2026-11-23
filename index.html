@@ -158,7 +158,10 @@ main{display:flex; flex:1; min-height:0; overflow:hidden;}
 <main>
   <div class="list-pane">
     <div class="search-wrap">
-      <input id="search" type="text" placeholder="Search by title or first line (English or Yorùbá)…" autocomplete="off">
+      <div style="position:relative;">
+        <input id="search" type="text" placeholder="Search by title or first line (English or Yorùbá)…" autocomplete="off" style="padding-right:40px;">
+        <button id="searchClear" type="button" aria-label="Clear search" style="display:none; position:absolute; right:4px; top:50%; transform:translateY(-50%); width:36px; height:36px; align-items:center; justify-content:center; background:none; border:none; color:var(--ink-soft); font-size:22px; line-height:1; cursor:pointer;">×</button>
+      </div>
       <div class="filters" id="filters"></div>
       <button id="categoriesToggle" type="button" style="margin-top:8px; background:none; border:none; color:var(--ink-soft); font-size:12px; cursor:pointer; padding:0; text-decoration:underline;">Show/hide categories</button>
       <div id="categoriesPanel" style="display:none; margin-top:8px; padding:10px; border:1px solid var(--line); border-radius:4px; max-height:160px; overflow-y:auto;"></div>
@@ -1579,7 +1582,17 @@ function renderReading(h){
   });
 }
 
-document.getElementById('search').addEventListener('input', renderList);
+const searchInput = document.getElementById('search');
+const searchClear = document.getElementById('searchClear');
+function updateSearchClear(){ searchClear.style.display = searchInput.value ? 'flex' : 'none'; }
+searchInput.addEventListener('input', ()=>{ updateSearchClear(); renderList(); });
+searchClear.addEventListener('click', ()=>{
+  searchInput.value = '';
+  updateSearchClear();
+  renderList();
+  searchInput.focus();
+});
+updateSearchClear();
 
 document.getElementById('categoriesToggle').addEventListener('click', ()=>{
   const panel = document.getElementById('categoriesPanel');
