@@ -167,6 +167,8 @@ main{display:flex; flex:1; min-height:0; overflow:hidden;}
       <div id="categoriesPanel" style="display:none; margin-top:8px; padding:10px; border:1px solid var(--line); border-radius:4px; max-height:160px; overflow-y:auto;"></div>
     </div>
     <button id="addBtn" type="button" style="display:none; margin:12px 16px 0; padding:8px 12px; border:1px dashed var(--gold); background:transparent; color:var(--gold); border-radius:4px; font-family:'Source Serif 4',serif; font-size:14px; cursor:pointer;">+ Add a hymn</button>
+    <button id="importBtn" type="button" style="display:none; margin:8px 16px 0; padding:8px 12px; border:1px dashed var(--gold); background:transparent; color:var(--gold); border-radius:4px; font-family:'Source Serif 4',serif; font-size:14px; cursor:pointer;">Import hymns from a file</button>
+    <input type="file" id="importFile" accept=".txt,.md,.pdf,.docx,.doc,text/plain,application/pdf" style="display:none">
     <div id="editNote" style="display:none; margin:8px 16px 0; font-size:12px; color:var(--ink-soft); line-height:1.4;">
       Changes here are saved for everyone who opens this app.
     </div>
@@ -1258,6 +1260,7 @@ window.addEventListener('resize', applyMobileLayout);
 function renderList(){
   renderFilters();
   document.getElementById('addBtn').style.display = editMode ? 'block' : 'none';
+  document.getElementById('importBtn').style.display = editMode ? 'block' : 'none';
   document.getElementById('editNote').style.display = editMode ? 'block' : 'none';
   applyMobileLayout();
   const q = normalizeSearch(document.getElementById('search').value);
@@ -1600,6 +1603,331 @@ document.getElementById('categoriesToggle').addEventListener('click', ()=>{
 });
 
 document.getElementById('addBtn').addEventListener('click', ()=>renderForm(null));
+
+// ---------- Import hymns from a file (.txt, .md, .docx, .pdf) ----------
+const IMPORT_LIBS = {
+  pdf: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js',
+  pdfWorker: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js',
+  mammoth: 'https://cdn.jsdelivr.net/npm/mammoth@1.5.1/mammoth.browser.min.js'
+};
+const loadedScripts = {};
+function loadScriptOnce(url){
+  if(!loadedScripts[url]){
+    loadedScripts[url] = new Promise((resolve, reject)=>{
+      const s = document.createElement('script');
+      s.src = url;
+      s.onload = resolve;
+      s.onerror = ()=>{ delete loadedScripts[url]; reject(new Error('Could not load the file reader — check your internet connection and try again.')); };
+      document.head.appendChild(s);
+    });
+  }
+  return loadedScripts[url];
+}
+
+function escHtml(s){
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function extractTextFromPdf(file){
+  await loadScriptOnce(IMPORT_LIBS.pdf);
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = IMPORT_LIBS.pdfWorker;
+  const pdf = await window.pdfjsLib.getDocument({data: new Uint8Array(await file.arrayBuffer())}).promise;
+  const lines = [];
+  for(let p = 1; p <= pdf.numPages; p++){
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    let cur = null;
+    content.items.forEach(it=>{
+      if(typeof it.str !== 'string') return;
+      const y = it.transform[5];
+      if(cur && Math.abs(cur.y - y) < 2.5){
+        cur.text += it.str;
+      } else {
+        if(cur) lines.push(cur);
+        cur = {text: it.str, y, page: p};
+      }
+    });
+    if(cur) lines.push(cur);
+    lines.push({pageBreak: true});
+  }
+  // Blank lines between stanzas show up as a bigger-than-usual gap between lines.
+  const gaps = [];
+  for(let i = 1; i < lines.length; i++){
+    const a = lines[i-1], b = lines[i];
+    if(!a.pageBreak && !b.pageBreak && a.page === b.page && a.y - b.y > 0) gaps.push(a.y - b.y);
+  }
+  gaps.sort((x, y)=> x - y);
+  const median = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
+  const out = [];
+  let prev = null;
+  lines.forEach(l=>{
+    if(l.pageBreak){ out.push(''); prev = null; return; }
+    if(prev && prev.page === l.page && median && (prev.y - l.y) > median * 1.45) out.push('');
+    out.push(l.text.replace(/\s+$/, ''));
+    prev = l;
+  });
+  return out.join('\n');
+}
+
+async function extractTextFromFile(file){
+  const name = (file.name || '').toLowerCase();
+  if(/\.(txt|md|text|csv)$/.test(name) || file.type === 'text/plain'){
+    return await file.text();
+  }
+  if(/\.docx$/.test(name)){
+    await loadScriptOnce(IMPORT_LIBS.mammoth);
+    const result = await window.mammoth.extractRawText({arrayBuffer: await file.arrayBuffer()});
+    // mammoth puts a blank line between paragraphs; undo that so real blank paragraphs (stanza breaks) are what remain
+    return result.value.split('\n\n').join('\n');
+  }
+  if(/\.doc$/.test(name)){
+    throw new Error('Older .doc files can’t be read. Open it in Word, choose Save As → .docx (or PDF or plain text), then import that file.');
+  }
+  if(/\.pdf$/.test(name) || file.type === 'application/pdf'){
+    return await extractTextFromPdf(file);
+  }
+  throw new Error('Please choose a .txt, .docx or .pdf file.');
+}
+
+/*PARSER_START*/
+const IMPORT_NUM_RE = /^\s*(\d{1,3})\s*[.)]\s+(\S.*)$/;          // "12. Title" (also used for numbered verses)
+const IMPORT_VERSE_RE = /^\s*(\d{1,2})\s*[.)]?\s+(\S.*)$/;       // "2. text" or "2 text"
+const IMPORT_LABEL_RE = /^\s*[\[(]?\s*(chorus|refrain)\s*[\])]?\s*(?:[:;.\-–—]\s*(.*))?$/i;
+const IMPORT_REF_TAIL_RE = /\s*[\[(]\s*(?:chorus|refrain)[^\])]*[\])]\s*$/i;
+
+function isAllCapsText(s){
+  const letters = String(s).replace(/[^\p{L}]/gu, '');
+  return letters.length >= 2 && letters === letters.toUpperCase();
+}
+
+function cleanImportedTitle(t){
+  let title = String(t || '').trim().replace(/[:;,]+$/, '').replace(/\s+/g, ' ');
+  if(isAllCapsText(title)) title = title.toLowerCase();
+  return title;
+}
+
+// Splits the text of a hymn (everything under its title) into verses and one chorus.
+// h.mode: 'seq'  = titles are numbered 1,2,3… and any numbered verses restart at 1
+//         'caps' = titles are numbered ALL-CAPS lines; verse 1 may be unnumbered, later verses "2." / "2 "
+function buildImportedHymn(h){
+  const lines = h.lines;
+  const markerRe = h.mode === 'caps' ? IMPORT_VERSE_RE : IMPORT_NUM_RE;
+  let numbered, expected;
+  if(h.mode === 'caps'){
+    const first = lines.map(l=> l.trim().match(markerRe)).find(Boolean);
+    const n0 = first ? parseInt(first[1], 10) : 0;
+    numbered = (n0 === 1 || n0 === 2);
+    expected = (n0 === 2) ? 2 : 1;
+  } else {
+    numbered = h.verseNums > 0;
+    expected = 1;
+  }
+  const blocks = [];
+  let block = null;
+  let chorusSeen = false;
+  const flush = ()=>{ if(block && block.lines.length) blocks.push(block); block = null; };
+  const nextNonEmpty = (i)=>{ for(let j = i + 1; j < lines.length; j++){ if(lines[j].trim()) return j; } return -1; };
+
+  for(let i = 0; i < lines.length; i++){
+    const t = lines[i].trim();
+    if(!t){
+      if(!numbered) flush();   // in numbered hymns a blank line doesn't end a verse
+      continue;
+    }
+    const nm = t.match(markerRe);
+    if(numbered && nm && parseInt(nm[1], 10) === expected){
+      flush();
+      expected++;
+      block = {type: 'verse', lines: [nm[2].replace(IMPORT_REF_TAIL_RE, '')]};
+      continue;
+    }
+    const lm = t.match(IMPORT_LABEL_RE);
+    if(lm){
+      const inline = (lm[2] || '').trim();
+      let isReference = false;   // a lone "Chorus" line that just reminds you to sing the chorus
+      if(!inline){
+        const nxt = nextNonEmpty(i);
+        if(nxt === -1){
+          isReference = true;
+        } else if(numbered){
+          const nn = lines[nxt].trim().match(markerRe);
+          isReference = !!(nn && parseInt(nn[1], 10) === expected) || IMPORT_LABEL_RE.test(lines[nxt].trim());
+        } else {
+          isReference = !(lines[i + 1] !== undefined && lines[i + 1].trim() !== '');
+        }
+      }
+      if(isReference) continue;
+      flush();
+      block = {type: chorusSeen ? 'dup' : 'chorus', lines: inline ? [inline] : []};
+      chorusSeen = true;
+      continue;
+    }
+    if(!block) block = {type: 'verse', lines: []};
+    block.lines.push(t.replace(IMPORT_REF_TAIL_RE, ''));
+  }
+  flush();
+
+  const verses = blocks.filter(b=> b.type === 'verse').map(b=> b.lines.join('\n').trim()).filter(Boolean);
+  const chorusBlock = blocks.find(b=> b.type === 'chorus');
+  return {title: h.title, verses, chorus: chorusBlock ? chorusBlock.lines.join('\n').trim() : ''};
+}
+
+// Finds each hymn in a block of text.
+function parseHymnsFromText(raw){
+  const lines = String(raw).replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').replace(/[\u200b\ufeff]/g, '')
+    .split('\n').map(l=> l.replace(/\s+$/, ''));
+
+  const numberedLines = lines.map(l=> l.match(IMPORT_NUM_RE)).filter(Boolean);
+  const capsTitles = numberedLines.filter(m=> isAllCapsText(m[2])).length;
+  const capsMode = capsTitles >= 2 || (capsTitles === 1 && numberedLines.length <= 8);
+
+  const hymns = [];
+  let cur = null;
+  lines.forEach(line=>{
+    const m = line.match(IMPORT_NUM_RE);
+    if(capsMode){
+      if(m && isAllCapsText(m[2])){
+        cur = {title: cleanImportedTitle(m[2]), lines: [], mode: 'caps'};
+        hymns.push(cur);
+        return;
+      }
+      if(cur) cur.lines.push(line);
+      return;
+    }
+    if(m){
+      const n = parseInt(m[1], 10);
+      if(cur && n === cur.verseNums + 1){
+        cur.verseNums++;
+        cur.lines.push(line);
+        return;
+      }
+      cur = {title: cleanImportedTitle(m[2]), lines: [], verseNums: 0, mode: 'seq'};
+      hymns.push(cur);
+      return;
+    }
+    if(cur) cur.lines.push(line);
+  });
+  if(!hymns.length){
+    // No numbered titles: treat the whole file as one hymn, with the first line as its title.
+    const first = lines.findIndex(l=> l.trim());
+    if(first === -1) return [];
+    hymns.push({title: cleanImportedTitle(lines[first]), lines: lines.slice(first + 1), verseNums: 0, mode: 'seq'});
+  }
+  return hymns.map(buildImportedHymn).filter(h=> h.title);
+}
+/*PARSER_END*/
+
+function renderImportReview(parsed, fileName){
+  const pane = document.getElementById('readingPane');
+  const existingTitles = new Set(getHymns().map(h=> normalizeSearch(h.title)));
+  const themes = Array.from(new Set(getHymns().map(h=> h.theme)));
+  const cards = parsed.map((h, i)=>{
+    const dup = existingTitles.has(normalizeSearch(h.title));
+    const noWords = h.verses.length === 0 && !h.chorus;
+    return `
+    <div class="import-card" data-i="${i}" style="border:1px solid var(--line); border-radius:6px; padding:12px; margin:12px 0;">
+      <label style="display:flex; align-items:center; gap:8px; margin:0 0 8px; color:var(--ink);">
+        <input type="checkbox" class="imp-use" ${dup || noWords ? '' : 'checked'}>
+        <input type="text" class="imp-title" value="${escHtml(h.title)}" style="flex:1; min-width:0; width:auto;">
+      </label>
+      ${dup ? '<div class="hint" style="margin:0 0 6px; color:var(--wine);">A hymn with this title is already in the hymnal.</div>' : ''}
+      ${noWords ? '<div class="hint" style="margin:0 0 6px;">No words were found for this one, so it will be added as a title only.</div>' : ''}
+      <input type="text" class="imp-author" placeholder="Author (optional)" style="margin-bottom:8px;">
+      <details>
+        <summary style="cursor:pointer; font-size:13px; color:var(--ink-soft);">${h.verses.length} verse${h.verses.length === 1 ? '' : 's'}${h.chorus ? ' + chorus' : ''} — check the words</summary>
+        <label>Verses (blank line between verses)</label>
+        <textarea class="imp-verses">${escHtml(h.verses.join('\n\n'))}</textarea>
+        <label>Chorus (optional)</label>
+        <textarea class="imp-chorus" style="min-height:70px;">${escHtml(h.chorus)}</textarea>
+      </details>
+      <label style="display:flex; align-items:center; gap:8px; margin:10px 0 0; font-size:13px;">
+        <input type="checkbox" class="imp-titleonly" ${noWords ? 'checked' : ''}> Title only — don’t keep the words (still under copyright)
+      </label>
+    </div>`;
+  }).join('');
+
+  pane.innerHTML = `
+    <div class="form-wrap">
+      <h2 style="font-family:'Cormorant Garamond',serif; font-weight:600; font-size:28px; margin:0 0 4px;">Import hymns</h2>
+      <div class="hint">Found ${parsed.length} hymn${parsed.length === 1 ? '' : 's'} in ${escHtml(fileName)}. Tick the ones to add, and fix any titles or words first.</div>
+      <label for="imp-theme">Theme for these hymns</label>
+      <input type="text" id="imp-theme" list="imp-theme-options" value="Other">
+      <datalist id="imp-theme-options">${themes.map(t=> `<option value="${escHtml(t)}">`).join('')}</datalist>
+      ${cards}
+      <div class="hint">Only import words you have the right to use. Tick “Title only” for songs still under copyright.</div>
+      <div id="imp-msg" style="font-size:13px; margin-top:8px; color:var(--wine); display:none;"></div>
+      <div class="form-actions">
+        <button class="btn-primary" id="imp-add" type="button">Add selected hymns</button>
+        <button class="btn-secondary" id="imp-cancel" type="button">Cancel</button>
+      </div>
+    </div>`;
+  pane.scrollTop = 0;
+  if(window.matchMedia('(max-width:760px)').matches){
+    pane.scrollIntoView({behavior: 'smooth', block: 'start'});
+  }
+
+  document.getElementById('imp-cancel').addEventListener('click', ()=>{
+    pane.innerHTML = '<div class="empty-state">Choose a hymn from the list to read its verses.</div>';
+  });
+  document.getElementById('imp-add').addEventListener('click', ()=>{
+    const theme = document.getElementById('imp-theme').value.trim() || 'Other';
+    let added = 0;
+    pane.querySelectorAll('.import-card').forEach(card=>{
+      if(!card.querySelector('.imp-use').checked) return;
+      const title = titleCase(card.querySelector('.imp-title').value.trim());
+      if(!title) return;
+      const hymn = {
+        no: nextHymnNo(),
+        title,
+        author: card.querySelector('.imp-author').value.trim() || 'Unknown',
+        year: null,
+        theme
+      };
+      const verses = card.querySelector('.imp-verses').value.split(/\n\s*\n/).map(v=> v.trim()).filter(Boolean);
+      const chorus = card.querySelector('.imp-chorus').value.trim();
+      if(!verses.length && chorus) verses.push(chorus);
+      if(card.querySelector('.imp-titleonly').checked || !verses.length){
+        hymn.copyrighted = true;
+      } else {
+        hymn.verses = verses;
+        if(chorus && verses[0] !== chorus) hymn.chorus = chorus;
+      }
+      overrides.added.push(hymn);
+      added++;
+    });
+    if(!added){
+      const msg = document.getElementById('imp-msg');
+      msg.textContent = 'Nothing is ticked yet — tick at least one hymn to add.';
+      msg.style.display = 'block';
+      return;
+    }
+    saveOverrides();
+    renderList();
+    pane.innerHTML = `<div class="empty-state">Added ${added} hymn${added === 1 ? '' : 's'} to the hymnal.</div>`;
+  });
+}
+
+const importBtn = document.getElementById('importBtn');
+const importFile = document.getElementById('importFile');
+importBtn.addEventListener('click', ()=>{ importFile.value = ''; importFile.click(); });
+importFile.addEventListener('change', async ()=>{
+  const file = importFile.files && importFile.files[0];
+  if(!file) return;
+  const pane = document.getElementById('readingPane');
+  pane.innerHTML = `<div class="empty-state">Reading ${escHtml(file.name)}…</div>`;
+  try{
+    const text = await extractTextFromFile(file);
+    const parsed = parseHymnsFromText(text);
+    if(!parsed.length){
+      pane.innerHTML = '<div class="empty-state" style="text-align:left;">No hymns were found in that file. Each hymn should start with a numbered title line, like “12. Hymn Title”, followed by its words.</div>';
+      return;
+    }
+    renderImportReview(parsed, file.name);
+  }catch(err){
+    pane.innerHTML = `<div class="empty-state" style="text-align:left;">Couldn’t read that file: ${escHtml(err.message)}</div>`;
+  }
+});
+
 
 const langBtn = document.getElementById('langBtn');
 langBtn.textContent = language === 'yo' ? 'English' : 'Yorùbá';
