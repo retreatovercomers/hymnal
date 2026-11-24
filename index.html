@@ -1700,13 +1700,19 @@ function isAllCapsText(s){
   return letters.length >= 2 && letters === letters.toUpperCase();
 }
 
+// A line that just says "Yoruba" (or Yorùbá, YORUBA:, [Yoruba], Yoruba version) starts the Yoruba version of the hymn above it.
+function isYorubaHeading(line){
+  const s = String(line).normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  return /^[\[(]?\s*yoruba(?:\s+version)?\s*[\])]?\s*[:\-–—]?$/i.test(s);
+}
+
 function cleanImportedTitle(t){
   let title = String(t || '').trim().replace(/[:;,]+$/, '').replace(/\s+/g, ' ');
   if(isAllCapsText(title)) title = title.toLowerCase();
   return title;
 }
 
-// Splits the text of a hymn (everything under its title) into verses and one chorus.
+// Splits the text of one version of a hymn (everything under its title) into verses and one chorus.
 // h.mode: 'seq'  = titles are numbered 1,2,3… and any numbered verses restart at 1
 //         'caps' = titles are numbered ALL-CAPS lines; verse 1 may be unnumbered, later verses "2." / "2 "
 function buildImportedHymn(h){
@@ -1769,10 +1775,23 @@ function buildImportedHymn(h){
 
   const verses = blocks.filter(b=> b.type === 'verse').map(b=> b.lines.join('\n').trim()).filter(Boolean);
   const chorusBlock = blocks.find(b=> b.type === 'chorus');
-  return {title: h.title, verses, chorus: chorusBlock ? chorusBlock.lines.join('\n').trim() : ''};
+  return {verses, chorus: chorusBlock ? chorusBlock.lines.join('\n').trim() : ''};
 }
 
-// Finds each hymn in a block of text.
+function buildImportedEntry(h){
+  const en = buildImportedHymn(h);
+  const entry = {title: h.title, verses: en.verses, chorus: en.chorus};
+  if(h.yo && h.yo.title){
+    const yo = buildImportedHymn({lines: h.yo.lines, verseNums: h.yo.verseNums, mode: h.mode});
+    entry.title_yo = h.yo.title;
+    entry.verses_yo = yo.verses;
+    entry.chorus_yo = yo.chorus;
+  }
+  return entry;
+}
+
+// Finds each hymn in a block of text. The Yoruba version, if there is one, comes straight after the English
+// words, introduced by a line that says "Yoruba" and then the Yoruba title.
 function parseHymnsFromText(raw){
   const lines = String(raw).replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').replace(/[\u200b\ufeff]/g, '')
     .split('\n').map(l=> l.replace(/\s+$/, ''));
@@ -1780,10 +1799,21 @@ function parseHymnsFromText(raw){
   const numberedLines = lines.map(l=> l.match(IMPORT_NUM_RE)).filter(Boolean);
   const capsTitles = numberedLines.filter(m=> isAllCapsText(m[2])).length;
   const capsMode = capsTitles >= 2 || (capsTitles === 1 && numberedLines.length <= 8);
+  const titleOf = (line)=>{ const mt = line.match(IMPORT_NUM_RE); return cleanImportedTitle(mt ? mt[2] : line); };
 
   const hymns = [];
   let cur = null;
   lines.forEach(line=>{
+    if(cur && isYorubaHeading(line)){
+      cur.yo = {title: null, lines: [], verseNums: 0};
+      return;
+    }
+    if(cur && cur.yo && cur.yo.title === null){
+      if(!line.trim()) return;               // skip blank lines between the "Yoruba" heading and its title
+      cur.yo.title = titleOf(line);          // the Yoruba title (even if it is numbered or in capitals)
+      return;
+    }
+    const target = (cur && cur.yo) ? cur.yo : cur;
     const m = line.match(IMPORT_NUM_RE);
     if(capsMode){
       if(m && isAllCapsText(m[2])){
@@ -1791,29 +1821,37 @@ function parseHymnsFromText(raw){
         hymns.push(cur);
         return;
       }
-      if(cur) cur.lines.push(line);
+      if(target) target.lines.push(line);
       return;
     }
     if(m){
       const n = parseInt(m[1], 10);
-      if(cur && n === cur.verseNums + 1){
-        cur.verseNums++;
-        cur.lines.push(line);
+      if(target && n === target.verseNums + 1){
+        target.verseNums++;
+        target.lines.push(line);
         return;
       }
       cur = {title: cleanImportedTitle(m[2]), lines: [], verseNums: 0, mode: 'seq'};
       hymns.push(cur);
       return;
     }
-    if(cur) cur.lines.push(line);
+    if(target) target.lines.push(line);
   });
   if(!hymns.length){
     // No numbered titles: treat the whole file as one hymn, with the first line as its title.
     const first = lines.findIndex(l=> l.trim());
     if(first === -1) return [];
-    hymns.push({title: cleanImportedTitle(lines[first]), lines: lines.slice(first + 1), verseNums: 0, mode: 'seq'});
+    const rest = lines.slice(first + 1);
+    const yi = rest.findIndex(isYorubaHeading);
+    const hymn = {title: cleanImportedTitle(lines[first]), lines: yi === -1 ? rest : rest.slice(0, yi), verseNums: 0, mode: 'seq'};
+    if(yi !== -1){
+      const yrest = rest.slice(yi + 1);
+      const yf = yrest.findIndex(l=> l.trim());
+      if(yf !== -1) hymn.yo = {title: titleOf(yrest[yf]), lines: yrest.slice(yf + 1), verseNums: 0};
+    }
+    hymns.push(hymn);
   }
-  return hymns.map(buildImportedHymn).filter(h=> h.title);
+  return hymns.map(buildImportedEntry).filter(h=> h.title);
 }
 /*PARSER_END*/
 
@@ -1833,12 +1871,18 @@ function renderImportReview(parsed, fileName){
       ${dup ? '<div class="hint" style="margin:0 0 6px; color:var(--wine);">A hymn with this title is already in the hymnal.</div>' : ''}
       ${noWords ? '<div class="hint" style="margin:0 0 6px;">No words were found for this one, so it will be added as a title only.</div>' : ''}
       <input type="text" class="imp-author" placeholder="Author (optional)" style="margin-bottom:8px;">
+      ${h.title_yo ? `<input type="text" class="imp-title-yo" value="${escHtml(h.title_yo)}" placeholder="Yorùbá title" style="margin-bottom:8px;">` : ''}
       <details>
-        <summary style="cursor:pointer; font-size:13px; color:var(--ink-soft);">${h.verses.length} verse${h.verses.length === 1 ? '' : 's'}${h.chorus ? ' + chorus' : ''} — check the words</summary>
+        <summary style="cursor:pointer; font-size:13px; color:var(--ink-soft);">${h.verses.length} verse${h.verses.length === 1 ? '' : 's'}${h.chorus ? ' + chorus' : ''}${h.title_yo ? ' · Yorùbá included' : ''} — check the words</summary>
         <label>Verses (blank line between verses)</label>
         <textarea class="imp-verses">${escHtml(h.verses.join('\n\n'))}</textarea>
         <label>Chorus (optional)</label>
         <textarea class="imp-chorus" style="min-height:70px;">${escHtml(h.chorus)}</textarea>
+        ${h.title_yo ? `
+        <label>Verses — Yorùbá (blank line between verses)</label>
+        <textarea class="imp-verses-yo">${escHtml((h.verses_yo || []).join('\n\n'))}</textarea>
+        <label>Chorus — Yorùbá (optional)</label>
+        <textarea class="imp-chorus-yo" style="min-height:70px;">${escHtml(h.chorus_yo || '')}</textarea>` : ''}
       </details>
       <label style="display:flex; align-items:center; gap:8px; margin:10px 0 0; font-size:13px;">
         <input type="checkbox" class="imp-titleonly" ${noWords ? 'checked' : ''}> Title only — don’t keep the words (still under copyright)
@@ -1892,6 +1936,17 @@ function renderImportReview(parsed, fileName){
         hymn.verses = verses;
         if(chorus && verses[0] !== chorus) hymn.chorus = chorus;
       }
+      const titleYoEl = card.querySelector('.imp-title-yo');
+      if(titleYoEl && titleYoEl.value.trim()) hymn.title_yo = titleCase(titleYoEl.value.trim());
+      const versesYoEl = card.querySelector('.imp-verses-yo');
+      if(versesYoEl && !hymn.copyrighted){
+        const versesYo = versesYoEl.value.split(/\n\s*\n/).map(v=> v.trim()).filter(Boolean);
+        if(versesYo.length){
+          hymn.verses_yo = versesYo;
+          const chorusYo = card.querySelector('.imp-chorus-yo').value.trim();
+          if(chorusYo) hymn.chorus_yo = chorusYo;
+        }
+      }
       overrides.added.push(hymn);
       added++;
     });
@@ -1919,7 +1974,7 @@ importFile.addEventListener('change', async ()=>{
     const text = await extractTextFromFile(file);
     const parsed = parseHymnsFromText(text);
     if(!parsed.length){
-      pane.innerHTML = '<div class="empty-state" style="text-align:left;">No hymns were found in that file. Each hymn should start with a numbered title line, like “12. Hymn Title”, followed by its words.</div>';
+      pane.innerHTML = '<div class="empty-state" style="text-align:left;">No hymns were found in that file. Each hymn should start with a numbered title line, like “12. Hymn Title”, followed by its words. If a hymn has a Yorùbá version, put a line saying “Yoruba” straight after the English words, then the Yorùbá title and words.</div>';
       return;
     }
     renderImportReview(parsed, file.name);
